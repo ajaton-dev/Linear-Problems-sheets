@@ -13,8 +13,8 @@
     <main>
       <h1>Simplex Tableau Sheet</h1>
       <p class="sub">
-        Maximisation with &le; constraints. Enter the LP, pick a table style,
-        and the first tableau is filled in for you.
+        Maximise a linear objective with &le;, &ge; or = constraints. Negative
+        right-hand sides are normalized before the starting tableau is built.
       </p>
 
       <section class="ctl">
@@ -70,6 +70,7 @@
 
       <div id="bar" class="row" hidden>
         <button id="next">+ Next tableau</button>
+        <button id="startPhase2" hidden>Start Phase 2</button>
         <button id="analyse" class="ghost">Analyse</button>
         <label><input id="hint" type="checkbox" /> Hint pivot</label>
         <label><input id="autosave" type="checkbox" /> Auto-save</label>
