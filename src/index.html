@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Simplex Tableau Sheet</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Simplex Tableau Sheet</h1>
+      <p class="sub">
+        Maximisation with &le; constraints. Enter the LP, pick a table style,
+        and the first tableau is filled in for you.
+      </p>
+
+      <section class="ctl">
+        <h2>1. Your LP</h2>
+        <div class="row">
+          <label>
+            Variables
+            <input class="n" id="nv" type="number" min="1" max="8" value="2" />
+          </label>
+          <label>
+            Constraints
+            <input class="n" id="mc" type="number" min="1" max="8" value="2" />
+          </label>
+        </div>
+        <div id="form"></div>
+      </section>
+
+      <section class="ctl">
+        <h2>Preview</h2>
+        <div id="prev" class="fn"></div>
+      </section>
+
+      <section class="ctl">
+        <h2>2. Table style</h2>
+        <div class="pick">
+          <label>
+            <input type="radio" name="st" value="A" checked />
+            <b>The Clean Style</b>
+            <small
+              >Basis | c<sub>B</sub> | variables | b | Ratio, then z<sub>j</sub>
+              and c<sub>j</sub> - z<sub>j</sub></small
+            >
+          </label>
+          <label>
+            <input type="radio" name="st" value="B" />
+            <b>Academic Style</b>
+            <small
+              >C<sub>j</sub> row on top, then c<sub>B</sub> | B | b | variables
+              | Ratio</small
+            >
+          </label>
+        </div>
+        <div class="row">
+          <button id="gen">Generate first tableau</button>
+        </div>
+        <div id="msg"></div>
+      </section>
+
+      <section class="ctl">
+        <h2>Presets</h2>
+        <div class="row" id="presets"></div>
+      </section>
+
+      <div id="bar" class="row" hidden>
+        <button id="next">+ Next tableau</button>
+        <button id="analyse" class="ghost">Analyse</button>
+        <label><input id="hint" type="checkbox" /> Hint pivot</label>
+        <label><input id="autosave" type="checkbox" /> Auto-save</label>
+        <button id="printBtn" class="ghost">Print</button>
+      </div>
+
+      <section id="resultBox" class="result" hidden></section>
+      <div id="out"></div>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>
