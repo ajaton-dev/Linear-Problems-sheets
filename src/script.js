@@ -47,7 +47,7 @@
 
   var S = null;
   var k = 0;
-  var STORAGE_KEY = "simplex-sheet-v2-state";
+  var STORAGE_KEY = "simplex-sheet-v3-state";
   var restoring = false;
 
   /* ==========================================================================
@@ -264,7 +264,14 @@
           return x.value.trim();
         });
         if (i === 0) res.z = v;
-        else res.cons.push({ a: v.slice(0, -1), b: v[v.length - 1] });
+        else {
+          var relation = r.querySelector("select");
+          res.cons.push({
+            a: v.slice(0, -1),
+            b: v[v.length - 1],
+            rel: relation ? relation.value : "<=",
+          });
+        }
       });
     return res;
   }
@@ -289,6 +296,7 @@
 
     for (i = 0; i < m; i++) {
       var c = o.cons[i] || { a: [], b: "" };
+      var relation = c.rel || "<=";
       h += '<div class="row r">';
       for (j = 0; j < n; j++) {
         h +=
@@ -299,7 +307,17 @@
           '">';
       }
       h +=
-        '<b>&le;</b><input class="c" placeholder="b" value="' +
+        '<select aria-label="Constraint relation">' +
+        '<option value="&lt;="' +
+        (relation === "<=" ? " selected" : "") +
+        ">&le;</option>" +
+        '<option value="&gt;="' +
+        (relation === ">=" ? " selected" : "") +
+        ">&ge;</option>" +
+        '<option value="="' +
+        (relation === "=" ? " selected" : "") +
+        ">=</option></select>" +
+        '<input class="c" placeholder="b" value="' +
         esc(c.b || "") +
         '"></div>';
     }
@@ -326,6 +344,36 @@
     return out || "0";
   }
 
+  function flipRelation(relation) {
+    if (relation === "<=") return ">=";
+    if (relation === ">=") return "<=";
+    return relation;
+  }
+
+  function normalizeConstraint(constraint) {
+    var relation = constraint.rel || "<=";
+    var rhs = Fraction.parse(constraint.b || "0");
+    if (!rhs || !rhs.lt(Fraction.zero())) {
+      return {
+        a: constraint.a.slice(),
+        b: constraint.b || "0",
+        rel: relation,
+        normalized: false,
+      };
+    }
+
+    var minusOne = new Fraction(-1n, 1n);
+    return {
+      a: constraint.a.map(function (value) {
+        var coefficient = Fraction.parse(value || "0");
+        return coefficient ? coefficient.mul(minusOne).toString() : value;
+      }),
+      b: rhs.mul(minusOne).toString(),
+      rel: flipRelation(relation),
+      normalized: true,
+    };
+  }
+
   function preview() {
     var f = readForm();
     var n = f.z.length;
@@ -334,7 +382,23 @@
 
     for (j = 1; j <= n; j++) names.push(sb("x", j));
     var lines = f.cons.map(function (c) {
-      return "<div>" + expr(c.a) + " &le; " + esc(c.b || "0") + "</div>";
+      var normalized = normalizeConstraint(c);
+      var relation =
+        normalized.rel === "<="
+          ? "&le;"
+          : normalized.rel === ">="
+            ? "&ge;"
+            : "=";
+      return (
+        "<div>" +
+        expr(normalized.a) +
+        " " +
+        relation +
+        " " +
+        esc(normalized.b) +
+        (normalized.normalized ? ' <small>(normalized)</small>' : "") +
+        "</div>"
+      );
     });
     lines.push("<div>" + names.join(", ") + " &ge; 0</div>");
 
@@ -356,13 +420,9 @@
    *
    * parseCell       single cell → { empty, frac }
    * normBasisLabel  "X_3" / "x3" → "x3" (canonical form)
-   * parseObjective  z inputs → Fraction[] padded with m zeros for slacks
-   * parseTableau    whole tableau → { basis, cb, A, b, ratios, zj, cjz, zval }
-   * getCjFractions  S.cj as Fraction[] (used by pivot math)
-   *
-   * REFACTOR NOTE: parseTableau and getCjFractions read S.n/S.m/S.cj. Passing
-   * S in as an explicit `problem` parameter would make them portable and
-   * testable without the global. Not applied yet.
+   * parseObjective  objective inputs → exact x-column costs
+   * parseTableau    problem + tableau section → parsed values and its phase model
+   * getCjFractions  explicit tableau cj vector → Fraction[] for pivot math
    *
    * SCALE HERE: add parsers for any new cell roles (§4). Nothing in this
    *   section should decide *what to do* with the parsed values.
@@ -374,7 +434,7 @@
       .toLowerCase()
       .replace(/\s+/g, "");
     if (!s) return "";
-    var m = s.match(/^([xs])_?(\d+)$/);
+    var m = s.match(/^([xsea])_?(\d+)$/);
     if (!m) return "";
     return m[1] + parseInt(m[2], 10);
   }
@@ -387,7 +447,7 @@
     return { empty: false, frac: f };
   }
 
-  function parseObjective(z, m) {
+  function parseObjective(z) {
     var out = [];
     var j;
     for (j = 0; j < z.length; j++) {
@@ -395,13 +455,23 @@
       if (!f) return null;
       out.push(f);
     }
-    for (var i = 0; i < m; i++) out.push(Fraction.zero());
     return out;
   }
 
-  function parseTableau(section, strict) {
-    var m = S.m;
-    var N = S.n + S.m;
+  function getTableModel(section, problem) {
+    var colsText = section.getAttribute("data-cols");
+    var cjText = section.getAttribute("data-cj");
+    return {
+      phase: section.getAttribute("data-phase") || "single",
+      cols: colsText ? JSON.parse(colsText) : problem.cols,
+      cj: cjText ? JSON.parse(cjText) : problem.cj,
+    };
+  }
+
+  function parseTableau(problem, section, strict) {
+    var model = getTableModel(section, problem);
+    var m = problem.m;
+    var N = model.cols.length;
     var i;
     var j;
     var basis = [];
@@ -446,6 +516,9 @@
     if (strict && !zv.frac) return null;
 
     return {
+      phase: model.phase,
+      cols: model.cols,
+      cj: model.cj,
       basis: basis,
       cb: cb,
       A: A,
@@ -457,8 +530,8 @@
     };
   }
 
-  function getCjFractions() {
-    return S.cj.map(function (v) {
+  function getCjFractions(problem, cj) {
+    return cj.map(function (v) {
       return Fraction.parse(v);
     });
   }
@@ -466,34 +539,32 @@
   /* ==========================================================================
    * §7  SIMPLEX PIVOT LOGIC  (the "brain")
    * --------------------------------------------------------------------------
-   * computeStandardChoice(tab)
+   * computeStandardChoice(problem, tab)
    *     Dantzig rule: pick max positive c_j − z_j; break ratio ties.
    *     Returns { entering, enteringSet, leavingSet, ratioTie }.
    *
-   * buildExpectedNext(prev, currBasis)
+   * buildExpectedNext(problem, prev, currBasis, cj, cols)
    *     Given the user's chosen new basis, produce the expected next tableau
    *     (or an { error } explaining why the pivot is invalid).
    *
-   * tableauOptimal(tab)
+   * tableauOptimal(problem, tab)
    *     Every c_j − z_j ≤ 0. No pivot candidates.
    *
-   * REFACTOR NOTE: all three read S.n / S.m / S.varKeys / S.cj from module
-   * state. Passing `problem` as a parameter would make them pure and let you
-   * unit-test them, or run two problems side-by-side. Not applied yet.
+   * These helpers take the problem explicitly and stay independent of the DOM.
    *
    * SCALE HERE: pivot-rule strategies go here. To add Bland's rule, extract
    *   an `enteringRule(tab, problem)` interface and swap at call sites.
-   *   Adding artificial-variable handling (Big-M, two-phase) also lives here.
    * ========================================================================== */
 
-  function computeStandardChoice(tab) {
-    var N = S.n + S.m;
-    var m = S.m;
+  function computeStandardChoice(problem, tab) {
+    var cols = tab.cols;
+    var N = cols.length;
+    var m = problem.m;
     var nonBasic = [];
     var j;
 
     for (j = 0; j < N; j++) {
-      if (tab.basis.indexOf(S.varKeys[j]) === -1) nonBasic.push(j);
+      if (tab.basis.indexOf(cols[j].key) === -1) nonBasic.push(j);
     }
 
     var max = null;
@@ -543,9 +614,10 @@
     };
   }
 
-  function buildExpectedNext(prev, currBasis) {
-    var m = S.m;
-    var N = S.n + S.m;
+  function buildExpectedNext(problem, prev, currBasis, cjValues, activeCols) {
+    var cols = activeCols;
+    var m = problem.m;
+    var N = cols.length;
     var i;
     var j;
 
@@ -562,10 +634,12 @@
 
     var leaveRow = diffs[0];
     var enterKey = currBasis[leaveRow];
-    var enterCol = S.varKeys.indexOf(enterKey);
+    var enterCol = cols.findIndex(function (col) {
+      return col.key === enterKey;
+    });
     if (enterCol === -1) {
       return {
-        error: "The new basic variable label is invalid. Use x1..xn or s1..sm.",
+        error: "The new basic variable label is invalid. Use x, s, e or a labels.",
       };
     }
     for (i = 0; i < m; i++) {
@@ -605,9 +679,12 @@
       }
     }
 
-    var cj = getCjFractions();
+    var cj = getCjFractions(problem, cjValues);
     var cb = basis.map(function (bk) {
-      return cj[S.varKeys.indexOf(bk)] || Fraction.zero();
+      var col = cols.findIndex(function (item) {
+        return item.key === bk;
+      });
+      return cj[col] || Fraction.zero();
     });
 
     var zj = [];
@@ -623,8 +700,11 @@
     var cjz = [];
     for (j = 0; j < N; j++) cjz.push(cj[j].sub(zj[j]));
 
-    var standard = computeStandardChoice(prev);
+    var standard = computeStandardChoice(problem, prev);
     var soft = [];
+    if (piv.lt(Fraction.zero())) {
+      soft.push("Soft note: negative pivot, b will go negative.");
+    }
     if (
       standard.enteringSet.length &&
       standard.enteringSet.indexOf(enterCol) === -1
@@ -633,18 +713,30 @@
         "Soft note: entering variable is not from the largest c_j - z_j set (ties are valid).",
       );
     }
-    if (
-      standard.enteringSet.indexOf(enterCol) !== -1 &&
-      standard.leavingSet.length
-    ) {
-      if (standard.leavingSet.indexOf(leaveRow) === -1) {
-        soft.push(
-          "Soft note: leaving row is not from the minimum ratio set (ties are valid).",
-        );
+
+    var minRatio = null;
+    var leavingRows = [];
+    for (i = 0; i < m; i++) {
+      var ratioPivot = prev.A[i][enterCol];
+      if (!ratioPivot || !ratioPivot.isPos()) continue;
+      var ratio = prev.b[i].div(ratioPivot);
+      if (minRatio === null || ratio.lt(minRatio)) {
+        minRatio = ratio;
+        leavingRows = [i];
+      } else if (ratio.eq(minRatio)) {
+        leavingRows.push(i);
       }
+    }
+    if (leavingRows.indexOf(leaveRow) === -1) {
+      soft.push(
+        "Soft note: leaving row is not from the minimum ratio set for the chosen entering variable (ties are valid).",
+      );
     }
 
     return {
+      phase: prev.phase,
+      cols: cols,
+      cj: cjValues,
       basis: basis,
       cb: cb,
       A: A,
@@ -657,10 +749,13 @@
     };
   }
 
-  function tableauOptimal(tab) {
-    return tab.cjz.every(function (v) {
-      return v && !v.isPos();
-    });
+  function tableauOptimal(problem, tab) {
+    return (
+      tab.cols.length === tab.cjz.length &&
+      tab.cjz.every(function (v) {
+        return v && !v.isPos();
+      })
+    );
   }
 
   /* ==========================================================================
@@ -677,12 +772,115 @@
    * All downstream code reads S; it should never be mutated after gen.
    * ========================================================================== */
 
+  function buildColumns(n, relations) {
+    var cols = [];
+    var i;
+
+    for (i = 1; i <= n; i++) {
+      cols.push({ key: "x" + i, type: "x" });
+    }
+    for (i = 0; i < relations.length; i++) {
+      if (relations[i] === "<=") cols.push({ key: "s" + (i + 1), type: "s" });
+      else if (relations[i] === ">=")
+        cols.push({ key: "e" + (i + 1), type: "e" });
+    }
+    for (i = 0; i < relations.length; i++) {
+      if (relations[i] !== "<=")
+        cols.push({ key: "a" + (i + 1), type: "a" });
+    }
+
+    return cols;
+  }
+
+  function columnIndex(cols, key) {
+    return cols.findIndex(function (col) {
+      return col.key === key;
+    });
+  }
+
+  function columnLabel(col) {
+    return sb(col.type, parseInt(col.key.slice(1), 10));
+  }
+
+  function costsForColumns(xCosts, cols) {
+    return cols.map(function (col) {
+      if (col.type !== "x") return Fraction.zero();
+      return xCosts[parseInt(col.key.slice(1), 10) - 1];
+    });
+  }
+
+  function phaseOneModel(problem) {
+    return {
+      phase: "1",
+      cols: problem.cols,
+      cj: problem.cols.map(function (col) {
+        return col.type === "a" ? "-1" : "0";
+      }),
+    };
+  }
+
+  function buildInitialTableau(problem, model) {
+    var cols = model.cols;
+    var cj = getCjFractions(problem, model.cj);
+    var basis = problem.relations.map(function (relation, i) {
+      return relation === "<=" ? "s" + (i + 1) : "a" + (i + 1);
+    });
+    var A = problem.A.map(function (row, rowIndex) {
+      return cols.map(function (col) {
+        var index = parseInt(col.key.slice(1), 10) - 1;
+        if (col.type === "x") return Fraction.parse(row[index]);
+        if (col.type === "s")
+          return new Fraction(
+            col.key === "s" + (rowIndex + 1) ? 1n : 0n,
+            1n,
+          );
+        if (col.type === "e")
+          return new Fraction(
+            col.key === "e" + (rowIndex + 1) ? -1n : 0n,
+            1n,
+          );
+        return new Fraction(
+          col.key === "a" + (rowIndex + 1) ? 1n : 0n,
+          1n,
+        );
+      });
+    });
+    var b = problem.b.map(function (value) {
+      return Fraction.parse(value);
+    });
+    var cb = basis.map(function (key) {
+      var index = columnIndex(cols, key);
+      return cj[index] || Fraction.zero();
+    });
+    var zj = cols.map(function (_col, j) {
+      return cb.reduce(function (sum, cost, i) {
+        return sum.add(cost.mul(A[i][j]));
+      }, Fraction.zero());
+    });
+    var zval = cb.reduce(function (sum, cost, i) {
+      return sum.add(cost.mul(b[i]));
+    }, Fraction.zero());
+
+    return {
+      phase: model.phase,
+      cols: cols,
+      cj: model.cj,
+      basis: basis,
+      cb: cb,
+      A: A,
+      b: b,
+      zj: zj,
+      cjz: cj.map(function (cost, j) {
+        return cost.sub(zj[j]);
+      }),
+      zval: zval,
+    };
+  }
+
   function gen() {
     var f = readForm();
     var n = f.z.length;
     var m = f.cons.length;
-    var vars = [];
-    var varKeys = [];
     var i;
     var j;
 
@@ -690,13 +888,13 @@
       return (v || "0").trim() || "0";
     });
 
-    var zFr = parseObjective(z, m);
-    if (!zFr) {
+    var xCosts = parseObjective(z);
+    if (!xCosts) {
       $("msg").textContent = "Invalid objective coefficient format.";
       return;
     }
     if (
-      zFr.slice(0, n).every(function (v) {
+      xCosts.every(function (v) {
         return v.isZero();
       })
     ) {
@@ -707,61 +905,72 @@
 
     var A = [];
     var b = [];
+    var relations = [];
     for (i = 0; i < m; i++) {
+      var normalized = normalizeConstraint(f.cons[i]);
+      if (["<=", ">=", "="].indexOf(normalized.rel) === -1) {
+        $("msg").textContent = "Invalid constraint relation.";
+        return;
+      }
       var row = [];
       for (j = 0; j < n; j++) {
-        var af = Fraction.parse((f.cons[i].a[j] || "0").trim() || "0");
+        var af = Fraction.parse(
+          (normalized.a[j] || "0").trim() || "0",
+        );
         if (!af) {
           $("msg").textContent = "Invalid constraint coefficient format.";
           return;
         }
         row.push(af.toString());
       }
-      var bf = Fraction.parse((f.cons[i].b || "0").trim() || "0");
+      var bf = Fraction.parse((normalized.b || "0").trim() || "0");
       if (!bf) {
         $("msg").textContent = "Invalid right-hand side format.";
         return;
       }
+      relations.push(normalized.rel);
       A.push(row);
       b.push(bf.toString());
     }
 
-    var neg = b.some(function (v) {
-      var fp = Fraction.parse(v);
-      return fp && fp.lt(Fraction.zero());
-    });
-
-    $("msg").textContent = neg
-      ? "A right-hand side is negative: the all-slack starting basis is not feasible, so plain simplex does not apply directly."
-      : "";
-
-    for (j = 1; j <= n; j++) {
-      vars.push(sb("x", j));
-      varKeys.push("x" + j);
-    }
-    for (i = 1; i <= m; i++) {
-      vars.push(sb("s", i));
-      varKeys.push("s" + i);
+    if (
+      getTableSections().length > 0 &&
+      !window.confirm("Generate a new tableau and discard the existing tableaux?")
+    ) {
+      return;
     }
 
+    var cols = buildColumns(n, relations);
     S = {
       n: n,
       m: m,
-      vars: vars,
-      varKeys: varKeys,
-      cj: zFr.map(function (x) {
+      cols: cols,
+      cj: costsForColumns(xCosts, cols).map(function (x) {
         return x.toString();
       }),
+      relations: relations,
       A: A,
       b: b,
       st: document.querySelector('input[name="st"]:checked').value,
     };
 
+    var hasArtificials = cols.some(function (col) {
+      return col.type === "a";
+    });
+    var model = hasArtificials
+      ? phaseOneModel(S)
+      : { phase: "single", cols: cols, cj: S.cj };
+    var initial = buildInitialTableau(S, model);
+
+    $("msg").textContent = "";
     k = 0;
     $("out").innerHTML = "";
     $("resultBox").hidden = true;
-    addTable(true);
+    $("startPhase2").hidden = true;
+    addTable(true, model, initial);
     $("bar").hidden = false;
+    if (model.phase === "1" && tableauOptimal(S, initial))
+      analyse(S, getTableSections().slice(-1)[0], true);
     saveStateMaybe();
   }
 
@@ -779,34 +988,69 @@
    *   shadow price column). Layout only — no math, no policy.
    * ========================================================================== */
 
-  function addTable(first) {
+  function addTable(first, model, initial, prefillSeed, prefillRoles) {
     k++;
-    var n = S.n;
+    var previous = getTableSections().slice(-1)[0];
+    if (!model && previous) model = getTableModel(previous, S);
+    if (!model)
+      model = { phase: "single", cols: S.cols, cj: S.cj };
+
     var m = S.m;
-    var N = n + m;
+    var N = model.cols.length;
     var B = S.st === "B";
     var h;
     var i;
     var j;
+    var phaseLabel =
+      model.phase === "1"
+        ? " — Phase 1"
+        : model.phase === "2"
+          ? " — Phase 2"
+          : "";
+    var seedText = prefillSeed ? JSON.stringify(prefillSeed) : "";
 
     var tctl =
       '<div class="tctl">' +
       (!first
         ? '<button class="ghost" data-act="check">Check my work</button><button class="ghost" data-act="reveal">Reveal tableau</button>'
         : "") +
+      (prefillSeed
+        ? '<button class="ghost" data-act="toggle-prefill">' +
+          (prefillRoles ? "Hide Phase 2 prefill" : "Show Phase 2 prefill") +
+          "</button>"
+        : "") +
       '<button class="ghost" data-act="remove">Remove</button></div>';
 
     h =
-      '<section class="tableau"><div class="tt"><b>Tableau ' +
+      '<section class="tableau" data-phase="' +
+      esc(model.phase) +
+      '" data-cols="' +
+      esc(JSON.stringify(model.cols)) +
+      '" data-cj="' +
+      esc(JSON.stringify(model.cj)) +
+      '"' +
+      (seedText
+        ? ' data-prefill-seed="' +
+          esc(seedText) +
+          '" data-prefilled="' +
+          (prefillRoles ? "true" : "false") +
+          '"'
+        : "") +
+      '><div class="tt"><b>Tableau ' +
       k +
+      phaseLabel +
       "</b>" +
       tctl +
       '</div><div class="wrap"><table>';
 
-    var vh = S.vars
-      .map(function (v, idx) {
+    var vh = model.cols
+      .map(function (col, idx) {
         return (
-          "<th" + (idx === 0 && !B ? ' class="sepl"' : "") + ">" + v + "</th>"
+          "<th" +
+          (idx === 0 && !B ? ' class="sepl"' : "") +
+          ">" +
+          columnLabel(col) +
+          "</th>"
         );
       })
       .join("");
@@ -814,7 +1058,7 @@
     if (B) {
       h +=
         '<tr><th>Max</th><th colspan="2">C<sub>j</sub></th>' +
-        S.cj
+        model.cj
           .map(function (v) {
             return "<th>" + esc(v) + "</th>";
           })
@@ -834,11 +1078,11 @@
     for (i = 0; i < m; i++) {
       var vals = [];
       for (j = 0; j < N; j++) {
-        vals.push(first ? (j < n ? S.A[i][j] : j - n === i ? "1" : "0") : "");
+        vals.push("");
       }
-      var cb = first ? "0" : "";
-      var bs = first ? "s" + (i + 1) : "";
-      var bv = first ? S.b[i] : "";
+      var cb = "";
+      var bs = "";
+      var bv = "";
       var cells = vals
         .map(function (v, idx) {
           return cell(v, idx === 0 && !B ? "sepl" : "", {
@@ -868,8 +1112,8 @@
     var zr = [];
     var cr = [];
     for (j = 0; j < N; j++) {
-      zr.push(first ? "0" : "");
-      cr.push(first ? S.cj[j] : "");
+      zr.push("");
+      cr.push("");
     }
 
     var zc = zr
@@ -893,7 +1137,7 @@
     if (B) {
       h +=
         '<tr class="z"><td></td><td class="lab">Z<sub>j</sub></td>' +
-        cell(first ? "0" : "", "", { role: "zval" }) +
+        cell("", "", { role: "zval" }) +
         zc +
         "<td></td></tr>";
       h +=
@@ -904,7 +1148,7 @@
       h +=
         '<tr class="z"><td></td><td class="lab">z<sub>j</sub></td>' +
         zc +
-        cell(first ? "0" : "", "sepl", { role: "zval" }) +
+        cell("", "sepl", { role: "zval" }) +
         "<td></td></tr>";
       h +=
         '<tr><td></td><td class="lab">c<sub>j</sub> - z<sub>j</sub></td>' +
@@ -914,8 +1158,11 @@
 
     h += '</table></div><div class="note" data-note></div></section>';
     $("out").insertAdjacentHTML("beforeend", h);
-    updateHints();
+    var section = getTableSections().slice(-1)[0];
+    if (initial) fillTableau(section, initial, prefillRoles, false);
+    else updateHints();
     renumber();
+    updatePhaseControls();
     saveStateMaybe();
   }
 
@@ -923,7 +1170,10 @@
     var sections = getTableSections();
     sections.forEach(function (sec, idx) {
       var b = sec.querySelector(".tt > b");
-      if (b) b.textContent = "Tableau " + (idx + 1);
+      var phase = sec.getAttribute("data-phase");
+      var phaseLabel =
+        phase === "1" ? " - Phase 1" : phase === "2" ? " - Phase 2" : "";
+      if (b) b.textContent = "Tableau " + (idx + 1) + phaseLabel;
     });
     k = sections.length;
   }
@@ -961,9 +1211,8 @@
 
   function compareAndMark(currSection, expected, prevSection, prevTab) {
     clearMarks(currSection);
-    if (prevSection) clearMarks(prevSection);
     var m = S.m;
-    var N = S.n + S.m;
+    var N = expected.cols.length;
     var i;
     var j;
     var checked = 0;
@@ -1025,8 +1274,12 @@
             mark(ratioInp, okRatio, wantRatio.toString());
           }
         } else {
-          wrong++;
-          mark(ratioInp, false, "N/A (a_ie <= 0)");
+          var marker = String(ratioInp.value || "")
+            .trim()
+            .toLowerCase();
+          var okMarker = ["-", "—", "∞", "inf", "n/a"].indexOf(marker) !== -1;
+          if (!okMarker) wrong++;
+          mark(ratioInp, okMarker, "— (a_ie <= 0)");
         }
       }
     }
@@ -1034,39 +1287,170 @@
     return { checked: checked, wrong: wrong };
   }
 
-  function fillTableau(section, exp) {
+  function fillTableau(section, exp, roles, showNote) {
     var m = S.m;
-    var N = S.n + S.m;
+    var N = exp.cols.length;
     var i;
     var j;
 
-    for (i = 0; i < m; i++) {
-      getInput(section, "basis", i).value = exp.basis[i];
-      getInput(section, "cb", i).value = exp.cb[i].toString();
-      getInput(section, "b", i).value = exp.b[i].toString();
-      getInput(section, "ratio", i).value = "";
-      for (j = 0; j < N; j++)
-        getInput(section, "a", i, j).value = exp.A[i][j].toString();
+    function includes(role) {
+      return !roles || roles.indexOf(role) !== -1;
     }
 
-    getInput(section, "zval").value = exp.zval.toString();
-    for (j = 0; j < N; j++) {
-      getInput(section, "zj", null, j).value = exp.zj[j].toString();
-      getInput(section, "cjz", null, j).value = exp.cjz[j].toString();
+    for (i = 0; i < m; i++) {
+      if (includes("basis"))
+        getInput(section, "basis", i).value = exp.basis[i];
+      if (includes("cb"))
+        getInput(section, "cb", i).value = exp.cb[i].toString();
+      if (includes("b")) getInput(section, "b", i).value = exp.b[i].toString();
+      if (includes("ratio")) getInput(section, "ratio", i).value = "";
+      if (includes("a")) {
+        for (j = 0; j < N; j++)
+          getInput(section, "a", i, j).value = exp.A[i][j].toString();
+      }
+    }
+
+    if (includes("zval"))
+      getInput(section, "zval").value = exp.zval.toString();
+    if (includes("zj") || includes("cjz")) {
+      for (j = 0; j < N; j++) {
+        if (includes("zj"))
+          getInput(section, "zj", null, j).value = exp.zj[j].toString();
+        if (includes("cjz"))
+          getInput(section, "cjz", null, j).value = exp.cjz[j].toString();
+      }
     }
 
     clearMarks(section);
     var note = section.querySelector("[data-note]");
-    note.textContent =
-      "Revealed from your chosen pivot." + (exp.soft ? " " + exp.soft : "");
+    if (showNote !== false)
+      note.textContent =
+        "Revealed from your chosen pivot." + (exp.soft ? " " + exp.soft : "");
     updateHints();
+    updatePhaseControls();
     saveStateMaybe();
+  }
+
+  function togglePhase2Prefill(section, button) {
+    var seed = JSON.parse(section.getAttribute("data-prefill-seed") || "{}");
+    var isPrefilled = section.getAttribute("data-prefilled") === "true";
+    if (isPrefilled) {
+      section.querySelectorAll(
+        'input[data-role="basis"], input[data-role="a"], input[data-role="b"]',
+      ).forEach(function (input) {
+        input.value = "";
+      });
+      section.setAttribute("data-prefilled", "false");
+      button.textContent = "Show Phase 2 prefill";
+      clearMarks(section);
+      updateHints();
+      saveStateMaybe();
+      return;
+    }
+
+    var model = getTableModel(section, S);
+    fillTableau(
+      section,
+      {
+        cols: model.cols,
+        basis: seed.basis,
+        A: seed.A,
+        b: seed.b,
+      },
+      ["basis", "a", "b"],
+      false,
+    );
+    section.setAttribute("data-prefilled", "true");
+    button.textContent = "Hide Phase 2 prefill";
+    saveStateMaybe();
+  }
+
+  function updatePhaseControls() {
+    var button = $("startPhase2");
+    if (!button) return;
+    button.hidden = true;
+    if (!S) return;
+
+    var section = getTableSections().slice(-1)[0];
+    if (!section || getTableModel(section, S).phase !== "1") return;
+    var tab = parseTableau(S, section, true);
+    if (
+      tab &&
+      tableauOptimal(S, tab) &&
+      tab.zval &&
+      tab.zval.isZero()
+    ) {
+      button.hidden = false;
+    }
+  }
+
+  function startPhase2() {
+    if (!S) return;
+    var section = getTableSections().slice(-1)[0];
+    if (!section) return;
+    var tab = parseTableau(S, section, true);
+    if (!tab || tab.phase !== "1" || !tableauOptimal(S, tab)) {
+      $("msg").textContent = "Complete an optimal Phase 1 tableau first.";
+      return;
+    }
+    if (!tab.zval || !tab.zval.isZero()) {
+      analyse(S, section, true);
+      $("startPhase2").hidden = true;
+      return;
+    }
+
+    var artificialBasic = tab.basis.filter(function (key) {
+      var index = columnIndex(tab.cols, key);
+      return index >= 0 && tab.cols[index].type === "a";
+    });
+    if (artificialBasic.length) {
+      analyse(S, section, true);
+      $("startPhase2").hidden = true;
+      return;
+    }
+
+    var cols = tab.cols.filter(function (col) {
+      return col.type !== "a";
+    });
+    var cj = cols.map(function (col) {
+      return S.cj[columnIndex(S.cols, col.key)];
+    });
+    var model = { phase: "2", cols: cols, cj: cj };
+    var initial = {
+      phase: "2",
+      cols: cols,
+      cj: cj,
+      basis: tab.basis.slice(),
+      A: tab.A.map(function (row) {
+        return row.filter(function (_value, index) {
+          return tab.cols[index].type !== "a";
+        });
+      }),
+      b: tab.b.slice(),
+    };
+    var seed = {
+      basis: initial.basis.slice(),
+      A: initial.A.map(function (row) {
+        return row.map(function (value) {
+          return value.toString();
+        });
+      }),
+      b: initial.b.map(function (value) {
+        return value.toString();
+      }),
+    };
+
+    $("startPhase2").hidden = true;
+    $("resultBox").hidden = true;
+    $("msg").textContent = "";
+    addTable(true, model, initial, seed, ["basis", "a", "b"]);
   }
 
   /* ==========================================================================
    * §11  ANALYSIS & HINTS
    * --------------------------------------------------------------------------
-   * analyse(section, forced)   optimality, unbounded, multi-optima, degenerate
+   * analyse(problem, section, forced)
+   *                             optimality, unbounded, multi-optima, degenerate
    * updateHints()              highlight the standard-rule pivot (col + row)
    *
    * SCALE HERE: sensitivity analysis, shadow prices, dual solution, reduced
@@ -1074,33 +1458,36 @@
    *   logic belongs here. Keep it read-only against S + tab.
    * ========================================================================== */
 
-  function analyse(section, forced) {
-    if (!S) {
-      $("msg").textContent = "Generate a tableau first.";
+  function analyse(problem, section, forced) {
+    if (!problem) {
+      if ($("msg")) $("msg").textContent = "Generate a tableau first.";
       return;
     }
 
     var sec = section || getTableSections().slice(-1)[0];
     if (!sec) return;
 
-    var tab = parseTableau(sec, true);
+    var tab = parseTableau(problem, sec, true);
     if (!tab) {
-      $("msg").textContent =
-        "Fill this tableau with valid numbers before analysis.";
+      var issue = "Fill this tableau with valid numbers before analysis.";
+      if ($("msg")) $("msg").textContent = issue;
+      var issueNote = sec.querySelector("[data-note]");
+      if (issueNote) issueNote.textContent = issue;
       return;
     }
 
-    var N = S.n + S.m;
-    var m = S.m;
-    var n = S.n;
+    var cols = tab.cols;
+    var N = cols.length;
+    var m = problem.m;
+    var n = problem.n;
     var j;
 
     var nonBasic = [];
     for (j = 0; j < N; j++) {
-      if (tab.basis.indexOf(S.varKeys[j]) === -1) nonBasic.push(j);
+      if (tab.basis.indexOf(cols[j].key) === -1) nonBasic.push(j);
     }
 
-    var optimal = tableauOptimal(tab);
+    var optimal = tableauOptimal(problem, tab);
     var unbounded = false;
     nonBasic.forEach(function (col) {
       if (!tab.cjz[col] || !tab.cjz[col].isPos()) return;
@@ -1115,40 +1502,71 @@
     });
 
     var multi = false;
-    if (optimal) {
+    if (optimal && tab.phase !== "1") {
       nonBasic.forEach(function (col) {
         if (tab.cjz[col] && tab.cjz[col].isZero()) multi = true;
       });
     }
 
+    var phaseOne = tab.phase === "1";
+    var infeasible =
+      phaseOne && optimal && tab.zval && !tab.zval.isZero();
+    var phaseOneFeasible =
+      phaseOne && optimal && tab.zval && tab.zval.isZero();
+    var artificialBasic = phaseOneFeasible
+      ? tab.basis.filter(function (key) {
+          var col = cols.find(function (item) {
+            return item.key === key;
+          });
+          return col && col.type === "a";
+        })
+      : [];
+
     var degBasic = tab.b.some(function (bv) {
       return bv && bv.isZero();
     });
-    var std = computeStandardChoice(tab);
+    var std = computeStandardChoice(problem, tab);
     var degTie = std.ratioTie;
     var degenerate = degBasic || degTie;
 
-    if (!forced && !optimal) return;
+    if (!forced && !optimal && !unbounded) return;
 
     var xVals = new Array(n).fill(Fraction.zero());
     for (var r = 0; r < m; r++) {
-      var bidx = S.varKeys.indexOf(tab.basis[r]);
-      if (bidx >= 0 && bidx < n) xVals[bidx] = tab.b[r];
+      var bidx = cols.findIndex(function (col) {
+        return col.key === tab.basis[r];
+      });
+      if (bidx >= 0 && cols[bidx].type === "x") {
+        var xidx = parseInt(cols[bidx].key.slice(1), 10) - 1;
+        if (xidx >= 0 && xidx < n) xVals[xidx] = tab.b[r];
+      }
     }
 
     var z = tab.zval;
     if (!z) {
       z = Fraction.zero();
-      var cj = getCjFractions();
-      for (j = 0; j < n; j++) z = z.add(cj[j].mul(xVals[j]));
+      var cj = getCjFractions(problem, tab.cj);
+      for (j = 0; j < N; j++) {
+        if (cols[j].type === "x") {
+          var xidx = parseInt(cols[j].key.slice(1), 10) - 1;
+          z = z.add(cj[j].mul(xVals[xidx]));
+        }
+      }
     }
 
+    var status = infeasible
+      ? "INFEASIBLE"
+      : unbounded
+        ? "Unbounded"
+        : phaseOneFeasible
+          ? "Phase 1 feasible (w = 0)"
+          : optimal
+            ? "Optimal tableau"
+            : "Not yet optimal";
+    var objectiveLabel = phaseOne ? "w" : "z";
     var lines = [];
     lines.push("<h2>Analysis</h2>");
-    if (unbounded) lines.push('<div><span class="pill">Unbounded</span></div>');
-    else if (optimal)
-      lines.push('<div><span class="pill">Optimal tableau</span></div>');
-    else lines.push('<div><span class="pill">Not yet optimal</span></div>');
+    lines.push('<div><span class="pill">' + status + "</span></div>");
 
     lines.push(
       "<div><b>Solution:</b> " +
@@ -1159,11 +1577,26 @@
           .join(", ") +
         "</div>",
     );
-    lines.push("<div><b>z</b> = " + z.toString() + "</div>");
+    lines.push(
+      "<div><b>" + objectiveLabel + "</b> = " + z.toString() + "</div>",
+    );
+    if (phaseOneFeasible && artificialBasic.length) {
+      lines.push(
+        '<div class="note">Phase 1 is feasible, but artificial variable' +
+          (artificialBasic.length > 1 ? "s " : " ") +
+          artificialBasic.join(", ") +
+          (artificialBasic.length > 1 ? " remain" : " remains") +
+          " basic at 0. Phase 2 cannot start yet.</div>",
+      );
+    }
     lines.push(
       "<div><b>Cases:</b> " +
         [
-          unbounded ? "Unbounded" : "Bounded at this tableau",
+          infeasible
+            ? "INFEASIBLE"
+            : unbounded
+              ? "Unbounded"
+              : "Bounded at this tableau",
           multi ? "Multiple optima" : "No multiple-optima flag",
           degenerate ? "Degenerate" : "Non-degenerate",
         ].join(" | ") +
@@ -1177,6 +1610,31 @@
 
     $("resultBox").innerHTML = lines.join("");
     $("resultBox").hidden = false;
+
+    var note = sec.querySelector("[data-note]");
+    if (note) {
+      note.textContent =
+        "Analysis: " +
+        status +
+        ". Solution: " +
+        xVals
+          .map(function (v, idx) {
+            return "x" + (idx + 1) + " = " + v.toString();
+          })
+          .join(", ") +
+        "; " +
+        objectiveLabel +
+        " = " +
+        z.toString() +
+        ". Flags: " +
+        [
+          unbounded ? "Unbounded" : "Bounded at this tableau",
+          multi ? "Multiple optima" : "No multiple-optima flag",
+          degenerate ? "Degenerate" : "Non-degenerate",
+        ].join(" | ") +
+        ".";
+    }
+    updatePhaseControls();
   }
 
   function updateHints() {
@@ -1186,9 +1644,9 @@
         td.classList.remove("hint-col", "hint-row");
       });
       if (!on) return;
-      var tab = parseTableau(sec, true);
+      var tab = parseTableau(S, sec, true);
       if (!tab) return;
-      var std = computeStandardChoice(tab);
+      var std = computeStandardChoice(S, tab);
       if (std.entering == null || !std.leavingSet.length) return;
       var e = std.entering;
       var r = std.leavingSet[0];
@@ -1201,7 +1659,7 @@
         var inp = getInput(sec, role, r);
         if (inp) inp.parentElement.classList.add("hint-row");
       });
-      for (var j = 0; j < S.n + S.m; j++) {
+      for (var j = 0; j < tab.cols.length; j++) {
         var aij = getInput(sec, "a", r, j);
         if (aij) aij.parentElement.classList.add("hint-row");
       }
@@ -1277,6 +1735,33 @@
         { a: ["1", "2"], b: "4" },
       ],
     },
+    ex3: {
+      label: "Ex3",
+      z: ["2", "3", "1"],
+      cons: [
+        { a: ["1", "1", "1"], b: "40", rel: "<=" },
+        { a: ["2", "1", "-1"], b: "10", rel: ">=" },
+        { a: ["0", "-1", "1"], b: "10", rel: ">=" },
+      ],
+    },
+    ex4: {
+      label: "Ex4",
+      z: ["1", "-1", "1"],
+      cons: [
+        { a: ["2", "-1", "-2"], b: "4", rel: "<=" },
+        { a: ["2", "-3", "1"], b: "-5", rel: "<=" },
+        { a: ["-1", "1", "-2"], b: "-1", rel: "<=" },
+      ],
+    },
+    ex5: {
+      label: "Ex5",
+      z: ["3", "1"],
+      cons: [
+        { a: ["1", "-1"], b: "4", rel: "<=" },
+        { a: ["-1", "-1"], b: "-3", rel: "<=" },
+        { a: ["2", "1"], b: "2", rel: "<=" },
+      ],
+    },
   };
   function buildPresetButtons() {
     $("presets").innerHTML = Object.keys(PRESETS)
@@ -1307,6 +1792,8 @@
       var ins = rows[i].querySelectorAll("input");
       for (var j = 0; j < p.z.length; j++) ins[j].value = c.a[j] || "0";
       ins[p.z.length].value = c.b;
+      var relation = rows[i].querySelector("select");
+      if (relation) relation.value = c.rel || "<=";
     }
 
     preview();
@@ -1349,18 +1836,27 @@
 
   function serializeTables() {
     return getTableSections().map(function (sec) {
-      return [].map
-        .call(sec.querySelectorAll("input[data-role]"), function (inp) {
-          return {
-            role: inp.getAttribute("data-role"),
-            row: inp.getAttribute("data-row"),
-            col: inp.getAttribute("data-col"),
-            value: inp.value,
-          };
-        })
-        .filter(function (x) {
-          return x.role;
-        });
+      var model = getTableModel(sec, S);
+      var seed = sec.getAttribute("data-prefill-seed");
+      return {
+        phase: model.phase,
+        cols: model.cols,
+        cj: model.cj,
+        prefillSeed: seed ? JSON.parse(seed) : null,
+        prefilled: sec.getAttribute("data-prefilled") === "true",
+        cells: [].map
+          .call(sec.querySelectorAll("input[data-role]"), function (inp) {
+            return {
+              role: inp.getAttribute("data-role"),
+              row: inp.getAttribute("data-row"),
+              col: inp.getAttribute("data-col"),
+              value: inp.value,
+            };
+          })
+          .filter(function (x) {
+            return x.role;
+          }),
+      };
     });
   }
 
@@ -1369,15 +1865,23 @@
       return false;
     var n = prob.n;
     var m = prob.m;
-    var vars = [];
-    var varKeys = [];
     var i;
     var j;
-
     var rawCj = Array.isArray(prob.cj) ? prob.cj.slice(0, n) : [];
     while (rawCj.length < n) rawCj.push("0");
-    var zFr = parseObjective(rawCj, m);
-    if (!zFr) return false;
+    var xCosts = parseObjective(rawCj);
+    if (!xCosts) return false;
+
+    var relations = Array.isArray(prob.relations)
+      ? prob.relations.slice(0, m)
+      : new Array(m).fill("<=");
+    while (relations.length < m) relations.push("<=");
+    if (
+      relations.some(function (relation) {
+        return ["<=", ">=", "="].indexOf(relation) === -1;
+      })
+    )
+      return false;
 
     var A = [];
     var b = [];
@@ -1395,23 +1899,16 @@
       b.push(bf.toString());
     }
 
-    for (j = 1; j <= n; j++) {
-      vars.push(sb("x", j));
-      varKeys.push("x" + j);
-    }
-    for (i = 1; i <= m; i++) {
-      vars.push(sb("s", i));
-      varKeys.push("s" + i);
-    }
+    var cols = buildColumns(n, relations);
 
     S = {
       n: n,
       m: m,
-      vars: vars,
-      varKeys: varKeys,
-      cj: zFr.map(function (x) {
+      cols: cols,
+      cj: costsForColumns(xCosts, cols).map(function (x) {
         return x.toString();
       }),
+      relations: relations,
       A: A,
       b: b,
       st: prob.st || prob.style || fallbackStyle || "A",
@@ -1432,6 +1929,7 @@
             n: S.n,
             m: S.m,
             cj: S.cj.slice(),
+            relations: S.relations.slice(),
             A: S.A.map(function (r) {
               return r.slice();
             }),
@@ -1484,12 +1982,47 @@
         $("resultBox").hidden = true;
         var tables = st.tables || [];
         if (tables.length > 0) {
-          for (var t = 0; t < tables.length; t++) addTable(t === 0);
+          for (var t = 0; t < tables.length; t++) {
+            var item = Array.isArray(tables[t])
+              ? { cells: tables[t] }
+              : tables[t] || {};
+            var previous = t > 0 ? tables[t - 1] : null;
+            var previousPhase =
+              previous && !Array.isArray(previous)
+                ? previous.phase || "single"
+                : "single";
+            var phase = item.phase || "single";
+            var model = {
+              phase: phase,
+              cols: item.cols || S.cols,
+              cj: item.cj || S.cj,
+            };
+            addTable(
+              t === 0 || phase !== previousPhase,
+              model,
+              null,
+              item.prefillSeed,
+              item.prefilled ? ["basis", "a", "b"] : null,
+            );
+          }
         } else {
-          addTable(true);
+          var hasArtificials = S.cols.some(function (col) {
+            return col.type === "a";
+          });
+          var initialModel = hasArtificials
+            ? phaseOneModel(S)
+            : { phase: "single", cols: S.cols, cj: S.cj };
+          addTable(
+            true,
+            initialModel,
+            buildInitialTableau(S, initialModel),
+          );
         }
         getTableSections().forEach(function (sec, idx) {
-          (tables[idx] || []).forEach(function (item) {
+          var tableData = Array.isArray(tables[idx])
+            ? tables[idx]
+            : (tables[idx] && tables[idx].cells) || [];
+          tableData.forEach(function (item) {
             var inp = getInput(sec, item.role, item.row, item.col);
             if (inp) inp.value = item.value || "";
           });
@@ -1497,6 +2030,7 @@
         $("bar").hidden = false;
         $("hint").checked = !!st.hint;
         updateHints();
+        updatePhaseControls();
       }
     } finally {
       restoring = false;
@@ -1515,16 +2049,25 @@
    * ========================================================================== */
 
   function bindEvents() {
-    $("nv").onchange = $("mc").onchange = function () {
+    function bind(id, eventName, handler) {
+      var element = $(id);
+      if (element) element.addEventListener(eventName, handler);
+    }
+
+    var renderChangedForm = function () {
       renderForm();
       notifyStaleTableaux();
     };
+    bind("nv", "change", renderChangedForm);
+    bind("mc", "change", renderChangedForm);
 
-    $("form").addEventListener("input", function () {
+    var formChanged = function () {
       preview();
       notifyStaleTableaux();
       saveStateMaybe();
-    });
+    };
+    bind("form", "input", formChanged);
+    bind("form", "change", formChanged);
 
     document.querySelectorAll('input[name="st"]').forEach(function (r) {
       r.addEventListener("change", function () {
@@ -1533,11 +2076,12 @@
       });
     });
 
-    $("gen").onclick = gen;
+    bind("gen", "click", gen);
+    bind("startPhase2", "click", startPhase2);
 
-    $("next").onclick = function () {
+    bind("next", "click", function () {
       if (!S) {
-        $("msg").textContent = "Generate first tableau first.";
+        if ($("msg")) $("msg").textContent = "Generate first tableau first.";
         return;
       }
       addTable(false);
@@ -1545,43 +2089,49 @@
         behavior: "smooth",
         block: "start",
       });
-    };
+    });
 
-    $("analyse").onclick = function () {
-      analyse(null, true);
-    };
+    bind("analyse", "click", function () {
+      analyse(S, null, true);
+    });
 
-    $("printBtn").onclick = function () {
+    bind("printBtn", "click", function () {
       window.print();
-    };
+    });
 
-    $("hint").onchange = function () {
+    bind("hint", "change", function () {
       updateHints();
       saveStateMaybe();
-    };
+    });
 
-    $("autosave").onchange = function () {
-      if (!this.checked) safeRemoveStorage();
+    bind("autosave", "change", function (event) {
+      if (!event.currentTarget.checked) safeRemoveStorage();
       else saveStateMaybe();
-    };
+    });
 
-    $("presets").addEventListener("click", function (e) {
+    bind("presets", "click", function (e) {
       var btn = e.target.closest("button[data-preset]");
       if (!btn) return;
       loadPreset(btn.getAttribute("data-preset"));
     });
 
-    $("out").addEventListener("click", function (e) {
+    bind("out", "click", function (e) {
       var btn = e.target.closest("button[data-act]");
       if (!btn) return;
 
       var sec = btn.closest("section.tableau");
       var act = btn.getAttribute("data-act");
 
+      if (act === "toggle-prefill") {
+        togglePhase2Prefill(sec, btn);
+        return;
+      }
+
       if (act === "remove") {
         sec.remove();
         renumber();
         updateHints();
+        updatePhaseControls();
         saveStateMaybe();
         return;
       }
@@ -1591,15 +2141,37 @@
       if (idx <= 0) return;
 
       var prevSec = all[idx - 1];
-      var prev = parseTableau(prevSec, true);
+      var prev = parseTableau(S, prevSec, true);
       if (!prev) {
         sec.querySelector("[data-note]").textContent =
           "Previous tableau must be fully and validly filled first.";
         return;
       }
 
-      var curr = parseTableau(sec, false);
-      var exp = buildExpectedNext(prev, curr.basis);
+      var currentModel = getTableModel(sec, S);
+      if (
+        prev.phase !== currentModel.phase ||
+        prev.cols.length !== currentModel.cols.length ||
+        prev.cols.some(function (col, colIndex) {
+          return (
+            col.key !== currentModel.cols[colIndex].key ||
+            col.type !== currentModel.cols[colIndex].type
+          );
+        })
+      ) {
+        sec.querySelector("[data-note]").textContent =
+          "The current and previous tableaux must use the same phase and columns.";
+        return;
+      }
+
+      var curr = parseTableau(S, sec, false);
+      var exp = buildExpectedNext(
+        S,
+        prev,
+        curr.basis,
+        prev.cj,
+        prev.cols,
+      );
       if (exp.error) {
         sec.querySelector("[data-note]").textContent = exp.error;
         return;
@@ -1615,18 +2187,20 @@
         "Checked " + cmp.checked + " filled cells; wrong: " + cmp.wrong + ".";
       if (exp.soft) note += " " + exp.soft;
       sec.querySelector("[data-note]").textContent = note;
-      if (cmp.wrong === 0) analyse(sec, false);
+      if (cmp.wrong === 0) analyse(S, sec, false);
       updateHints();
+      updatePhaseControls();
       saveStateMaybe();
     });
 
-    $("out").addEventListener("input", function (e) {
+    bind("out", "input", function (e) {
       var sec = e.target.closest("section.tableau");
       if (!sec || !S) {
         saveStateMaybe();
         return;
       }
       updateHints();
+      updatePhaseControls();
       saveStateMaybe();
     });
   }
@@ -1645,5 +2219,22 @@
     restoreState(savedState);
   }
 
-  init();
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      Fraction: Fraction,
+      PRESETS: PRESETS,
+      buildColumns: buildColumns,
+      buildExpectedNext: buildExpectedNext,
+      buildInitialTableau: buildInitialTableau,
+      computeStandardChoice: computeStandardChoice,
+      costsForColumns: costsForColumns,
+      getCjFractions: getCjFractions,
+      normBasisLabel: normBasisLabel,
+      normalizeConstraint: normalizeConstraint,
+      phaseOneModel: phaseOneModel,
+      tableauOptimal: tableauOptimal,
+    };
+  }
+
+  if (typeof document !== "undefined") init();
 })();
