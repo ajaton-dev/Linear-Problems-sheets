@@ -7,6 +7,8 @@ Planned bug fixes , documentation updates, and features for **LinearProgrammingS
 
 - [ ] **"Clean" Table Style Layout:** Move the decision variables row ($x_1, x_2, \dots$) (the one between $C_B$ and $b$) up, and use the freed space to display the objective $x$ coefficients (matching the "Academic" style for better clarity).
 
+
+- [ ] **Manually Removing first generated tableau  :** Deleting first generated tableau (through "Generate first tableau" button and deleting it with "Remove" button) doesn't allow the user to <u>check his work </u> or <u>Reveal Tableau</U> . 
 ## 📖 Documentation & UX (`doc`)
 - [ ] **Pivot Hint Disclaimer:** Add a clear warning/tooltip informing users that the "Pivot hint" highlights the standard textbook pivot rule and does not necessarily reflect their personal pivot path.
 
