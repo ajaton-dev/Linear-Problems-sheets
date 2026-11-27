@@ -8,15 +8,15 @@ Planned bug fixes , documentation updates, and features for **LinearProgrammingS
 - [ ] **"Clean" Table Style Layout:** Move the decision variables row ($x_1, x_2, \dots$) (the one between $C_B$ and $b$) up, and use the freed space to display the objective $x$ coefficients (matching the "Academic" style for better clarity).
 
 
-- [ ] **Manually Removing first generated tableau  :** Deleting first generated tableau (through "Generate first tableau" button and deleting it with "Remove" button) doesn't allow the user to <u>check his work </u> or <u>Reveal Tableau</U> . 
+- [ ] **Manually Removing first generated tableau  :** Deleting first generated tableau (through "Generate first tableau" button and deleting it with "Remove" button) doesn't allow the user to <ins>Check His Work</ins> or <ins>Reveal Tableau</ins> . 
 ## 📖 Documentation & UX (`doc`)
 - [ ] **Pivot Hint Disclaimer:** Add a clear warning/tooltip informing users that the "Pivot hint" highlights the standard textbook pivot rule and does not necessarily reflect their personal pivot path.
 
 ## ♻️ Refactoring (`refactor`)
-- [ ] **Refactor script.js :** split the single script.js into ES modules without any behaviour changes . This is very necessary for easier future scalability and readability.
+- [ ] **Refactor script.js :** split the single script.js into ES modules without any behaviour changes . This is very necessary for easier future scalability and readability. (<ins>**MANDATORY CHANGE**</ins>)
 
 ## ✨ New Features (`feat`)
-- [ ] **Standard form explanation :** Allow for an option to demonstration on how constraints where normalized 
+- [ ] **Standard form explanation :** Allow for an option to demonstration on how constraints where normalized . In addition , allow the user to see the additional variables in the constraints like slack $S_i$ , excess $e_i$ or additional variables $a_i$ (after adding big M method feature)
 - [ ] **Equivalent values of $C_j - Z_j$:** Treat the case when we have 2 or more choices of pivots by following the **Greatest Improvement Rule (Largest Objective Change Tie-Breaker)**:
 
   When two or more entering variables $x_j$ have equal $C_j - Z_j$ values in the Simplex method:
